@@ -1,97 +1,60 @@
 # API Scout
 
-API Scout is a standalone discovery tool that searches GitHub for repositories
-that may point to useful public/free APIs, inspects a small number of README
-files, and ranks the results for a software project's needs.
+API Scout is a standalone data-source intelligence tool. It discovers GitHub
+repositories that may lead to useful APIs, SDKs and public data sources, applies
+a relevance gate, extracts local evidence, classifies the source, and ranks
+candidates with deterministic, explainable scoring.
 
-## V0 goal
+GitHub is discovery, not truth. API Scout does not claim a provider is free,
+legal for your use case, available, or production-safe until official provider
+documentation is verified.
 
-Given needs such as:
+## What changed in V0.2
 
-- Solana
-- on-chain data
-- news
-- social media
-- market data
-- weather
-- travel
+- relevance-first GitHub search instead of star-first ranking
+- hard relevance gate to suppress giant unrelated repositories
+- context-aware README evidence windows
+- API directory / provider / SDK / generic-resource classification
+- intelligence capability taxonomy
+- lower weighting for GitHub stars
+- local risk/free-hint detection instead of whole-README keyword scanning
+- Windows-friendly Markdown encoding
+- graceful GitHub rate-limit errors
+- built-in `cipher-intelligence` discovery profile
 
-API Scout produces a shortlist with:
+## C.I.P.H.E.R. intelligence profile
 
-- repository name
-- GitHub URL
-- stars
-- last update time
-- license metadata
-- matched project needs
-- free/public hints
-- obvious risk/deprecation hints
-- README evidence
-- a transparent heuristic score
+The profile searches for legitimate public data access around:
 
-V0 is intentionally deterministic. It does **not** use an LLM yet.
+- X/Twitter public-post APIs and clients
+- social-media/public-post data
+- Bluesky / ATProto
+- meme, GIF and reaction trends
+- Reddit/community data
+- news and RSS
+- Solana and on-chain data
+- crypto market / DEX data
 
-## Important limitation
-
-A GitHub repository mentioning a "free API" is only a lead.
-
-Before integrating any API, verify against the provider's official
-documentation:
-
-- current pricing
-- free-tier quota
-- authentication method
-- rate limits
-- commercial-use terms
-- data licensing
-- redistribution restrictions
-- maintenance status
-
-## Install on Windows
+Run:
 
 ```powershell
-cd D:\
-mkdir API-Scout
-cd API-Scout
+api-scout --profile cipher-intelligence
 ```
 
-Extract this project here, then:
+Add extra requirements when needed:
 
 ```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install --upgrade pip
-pip install -e ".[dev]"
+api-scout --profile cipher-intelligence --need websocket --need "historical data"
 ```
 
-## Run tests
-
-```powershell
-ruff check .
-pytest
-```
-
-## Use it
-
-Basic run:
+General discovery still works:
 
 ```powershell
 api-scout
+api-scout --need weather --need travel
 ```
 
-Target specific needs:
-
-```powershell
-api-scout --need solana --need "on-chain" --need "social media"
-```
-
-Or without installing the command:
-
-```powershell
-python -m api_scout.cli --need news --need crypto
-```
-
-Outputs are written to:
+## Output
 
 ```text
 api_scout_output/
@@ -99,24 +62,53 @@ api_scout_output/
     api_scout_report.md
 ```
 
+The report includes:
+
+- deterministic score
+- confidence label
+- source type
+- matched needs
+- intelligence capabilities
+- local API evidence
+- free/public hints
+- risk hints
+- ranking reasons
+- relevant README evidence
+
+## Install on Windows
+
+```powershell
+cd D:\API-Scout
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+pip install -e ".[dev]"
+```
+
+## Validate
+
+```powershell
+python -m ruff check .
+python -m pytest
+```
+
 ## Optional GitHub token
 
-For small V0 searches, API Scout can use public GitHub access without a token.
-
-If you later create a read-only GitHub token, put it in your environment:
+Small runs can use public GitHub access. For higher GitHub rate limits, create a
+read-only token and expose it only in your shell or another secret store:
 
 ```powershell
 $env:GITHUB_TOKEN="YOUR_TOKEN"
 ```
 
-Never commit a token to Git and never paste it into chat.
+Never commit a token and never paste it into chat.
 
-## Planned roadmap
+## Roadmap
 
-V0: GitHub discovery + deterministic ranking  
+V0.2: precision discovery + C.I.P.H.E.R. intelligence profile  
 V1: official provider documentation verification  
-V2: pricing/free-tier/rate-limit extraction  
-V3: API health and maintenance checks  
-V4: LLM recommendation layer  
+V2: pricing, free-tier, authentication and rate-limit extraction  
+V3: licensing/commercial-use checks + API health  
+V4: recommendation/LLM layer over verified evidence  
 V5: starter integration-code generation  
-V6: web app / SaaS / team API catalog
+V6: web app / SaaS / team source catalog

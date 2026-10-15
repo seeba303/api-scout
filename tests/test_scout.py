@@ -9,50 +9,94 @@ from api_scout.scout import ApiScout
 
 @pytest.mark.asyncio
 async def test_scout_deduplicates_and_ranks_results() -> None:
-    def handler(
-        request: httpx.Request,
-    ) -> httpx.Response:
-        if request.url.path == (
-            "/search/repositories"
-        ):
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/search/repositories":
             return httpx.Response(
                 200,
                 json={
                     "items": [
                         {
                             "full_name": "acme/sol-api",
-                            "html_url": (
-                                "https://github.com/"
-                                "acme/sol-api"
-                            ),
-                            "description": (
-                                "Free Solana API"
-                            ),
+                            "html_url": "https://github.com/acme/sol-api",
+                            "description": "Solana REST API",
                             "stargazers_count": 100,
-                            "updated_at": (
-                                "2099-01-01T00:00:00Z"
-                            ),
-                            "topics": [
-                                "solana",
-                                "api",
-                            ],
-                            "license": {
-                                "name": "MIT License"
-                            },
+                            "updated_at": "2099-01-01T00:00:00Z",
+                            "topics": ["solana", "api"],
+                            "license": {"name": "MIT License"},
                         }
                     ]
                 },
             )
 
-        if request.url.path == (
-            "/repos/acme/sol-api/readme"
-        ):
+        if request.url.path == "/repos/acme/sol-api/readme":
+            return httpx.Response(
+                200,
+                text="Free public API for Solana market data. No API key required.",
+            )
+
+        return httpx.Response(404)
+
+    client = httpx.AsyncClient(
+        base_url="https://api.github.com",
+        transport=httpx.MockTransport(handler),
+    )
+    github = GitHubClient(client=client)
+    scout = ApiScout(github)
+
+    candidates = await scout.discover(
+        needs=("solana", "market data"),
+        results_per_query=1,
+        inspect_limit=5,
+        search_queries=("one", "two"),
+    )
+
+    assert len(candidates) == 1
+    assert candidates[0].full_name == "acme/sol-api"
+    assert "solana" in candidates[0].matched_needs
+    assert candidates[0].score > 0
+
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_scout_filters_huge_irrelevant_repository() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/search/repositories":
+            return httpx.Response(
+                200,
+                json={
+                    "items": [
+                        {
+                            "full_name": "big/style-guide",
+                            "html_url": "https://github.com/big/style-guide",
+                            "description": "JavaScript style guide",
+                            "stargazers_count": 500000,
+                            "updated_at": "2099-01-01T00:00:00Z",
+                            "topics": ["javascript"],
+                            "license": {"name": "MIT License"},
+                        },
+                        {
+                            "full_name": "small/social-api",
+                            "html_url": "https://github.com/small/social-api",
+                            "description": "Social media REST API client",
+                            "stargazers_count": 50,
+                            "updated_at": "2099-01-01T00:00:00Z",
+                            "topics": ["social-media", "api"],
+                            "license": {"name": "MIT License"},
+                        },
+                    ]
+                },
+            )
+
+        if request.url.path == "/repos/big/style-guide/readme":
+            return httpx.Response(200, text="API design patterns. Programming guide.")
+
+        if request.url.path == "/repos/small/social-api/readme":
             return httpx.Response(
                 200,
                 text=(
-                    "Free public API for "
-                    "Solana market data. "
-                    "No API key required."
+                    "Social media public posts are available through a "
+                    "REST API endpoint."
                 ),
             )
 
@@ -60,38 +104,18 @@ async def test_scout_deduplicates_and_ranks_results() -> None:
 
     client = httpx.AsyncClient(
         base_url="https://api.github.com",
-        transport=httpx.MockTransport(
-            handler
-        ),
+        transport=httpx.MockTransport(handler),
     )
-
-    github = GitHubClient(
-        client=client,
-    )
-
+    github = GitHubClient(client=client)
     scout = ApiScout(github)
 
     candidates = await scout.discover(
-        needs=(
-            "solana",
-            "market data",
-        ),
-        results_per_query=1,
+        needs=("social media", "public posts"),
+        results_per_query=2,
         inspect_limit=5,
-        search_queries=(
-            "one",
-            "two",
-        ),
+        search_queries=("social",),
     )
 
-    assert len(candidates) == 1
-    assert (
-        candidates[0].full_name
-        == "acme/sol-api"
-    )
-    assert "solana" in (
-        candidates[0].matched_needs
-    )
-    assert candidates[0].score > 0
+    assert [candidate.full_name for candidate in candidates] == ["small/social-api"]
 
     await client.aclose()

@@ -2,275 +2,162 @@
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
+from api_scout.analysis import classify_source, confidence_for, detect_capabilities
+from api_scout.evidence import extract_relevant_excerpt
 from api_scout.github import GitHubClient
-from api_scout.models import ApiCandidate
-from api_scout.scoring import score_repository
+from api_scout.models import ApiCandidate, SourceType
+from api_scout.profiles import GENERAL
+from api_scout.scoring import API_HINTS, keyword_hits, score_repository
 
-DEFAULT_NEEDS = (
-    "news",
-    "social media",
-    "crypto",
-    "solana",
-    "trends",
-    "rss",
-    "market data",
-    "on-chain",
-)
-
-DEFAULT_SEARCH_QUERIES = (
-    '"public api" free list',
-    '"free api" news social',
-    '"free api" crypto solana',
-    '"open api" trends social media',
-    '"public api" market data crypto',
-)
-
-
-def readme_excerpt(
-    readme: str,
-    needs: tuple[str, ...],
-    *,
-    max_chars: int = 900,
-) -> str:
-    """Extract lines likely to contain API details."""
-
-    interesting = (
-        "api",
-        "auth",
-        "free",
-        "rate",
-        "limit",
-        *needs,
-    )
-
-    selected: list[str] = []
-    current_size = 0
-
-    for line in readme.splitlines():
-        clean = " ".join(
-            line.strip().split()
-        )
-
-        if not clean:
-            continue
-
-        lowered = clean.casefold()
-
-        if not any(
-            word.casefold() in lowered
-            for word in interesting
-        ):
-            continue
-
-        selected.append(clean)
-        current_size += len(clean) + 1
-
-        if current_size >= max_chars:
-            break
-
-    return "\n".join(selected)[:max_chars]
+DEFAULT_NEEDS = GENERAL.needs
+DEFAULT_SEARCH_QUERIES = GENERAL.search_queries
 
 
 class ApiScout:
     """Discover and rank GitHub API leads."""
 
-    def __init__(
-        self,
-        github: GitHubClient,
-    ) -> None:
+    def __init__(self, github: GitHubClient) -> None:
         self.github = github
 
     async def discover(
         self,
         *,
         needs: tuple[str, ...] = DEFAULT_NEEDS,
-        results_per_query: int = 4,
-        inspect_limit: int = 10,
-        search_queries: tuple[str, ...] = (
-            DEFAULT_SEARCH_QUERIES
-        ),
+        results_per_query: int = 5,
+        inspect_limit: int = 15,
+        search_queries: tuple[str, ...] = DEFAULT_SEARCH_QUERIES,
+        min_score: float = 0.0,
     ) -> list[ApiCandidate]:
-        """Search GitHub, inspect READMEs and rank leads."""
+        """Search GitHub, inspect READMEs and return relevance-gated leads."""
 
-        repositories: dict[
-            str,
-            dict[str, Any],
-        ] = {}
+        repositories: dict[str, dict[str, Any]] = {}
+        search_hits: dict[str, int] = {}
 
         for query in search_queries:
-            results = (
-                await self.github.search_repositories(
-                    query,
-                    per_page=results_per_query,
-                )
+            results = await self.github.search_repositories(
+                query,
+                per_page=results_per_query,
             )
 
-            for repo in results:
-                full_name = repo.get(
-                    "full_name"
+            for rank, repo in enumerate(results, start=1):
+                full_name = repo.get("full_name")
+                if not isinstance(full_name, str) or not full_name:
+                    continue
+
+                repositories.setdefault(full_name, repo)
+                search_hits[full_name] = search_hits.get(full_name, 0) + max(
+                    1,
+                    results_per_query - rank + 1,
                 )
 
-                if (
-                    isinstance(full_name, str)
-                    and full_name
-                ):
-                    repositories.setdefault(
-                        full_name,
-                        repo,
-                    )
+        def pre_rank(repo: dict[str, Any]) -> float:
+            full_name = str(repo.get("full_name", ""))
+            description = str(repo.get("description") or "")
+            topics = tuple(
+                topic for topic in repo.get("topics", []) if isinstance(topic, str)
+            )
+            metadata = " ".join((full_name, description, " ".join(topics)))
+            need_hits = keyword_hits(metadata, needs)
+            api_hits = keyword_hits(metadata, API_HINTS)
+            capabilities = detect_capabilities(metadata)
+            stars = int(repo.get("stargazers_count", 0) or 0)
 
-        by_popularity = sorted(
+            return (
+                len(need_hits) * 4.0
+                + len(api_hits) * 2.0
+                + len(capabilities) * 1.5
+                + search_hits.get(full_name, 0)
+                + min(1.0, math.log10(max(stars, 1) + 1) / 5.0)
+            )
+
+        ranked_for_inspection = sorted(
             repositories.values(),
-            key=lambda repo: int(
-                repo.get(
-                    "stargazers_count",
-                    0,
-                )
-                or 0
-            ),
+            key=pre_rank,
             reverse=True,
         )
 
         candidates: list[ApiCandidate] = []
 
-        for repo in by_popularity[
-            :inspect_limit
-        ]:
-            full_name = str(
-                repo.get(
-                    "full_name",
-                    "",
-                )
-            )
-
-            readme = (
-                await self.github.readme(
-                    full_name
-                )
-            )
-
-            description = str(
-                repo.get("description")
-                or ""
-            )
-
+        for repo in ranked_for_inspection[:inspect_limit]:
+            full_name = str(repo.get("full_name", ""))
+            readme = await self.github.readme(full_name)
+            description = str(repo.get("description") or "")
             topics = tuple(
-                topic
-                for topic in repo.get(
-                    "topics",
-                    [],
-                )
-                if isinstance(topic, str)
+                topic for topic in repo.get("topics", []) if isinstance(topic, str)
+            )
+            metadata_text = " ".join((full_name, description, " ".join(topics)))
+            evidence_text = extract_relevant_excerpt(readme, needs)
+            relevant_text = f"{metadata_text} {evidence_text}"
+
+            matched_needs = keyword_hits(relevant_text, needs)
+            capabilities = detect_capabilities(relevant_text)
+            api_evidence = keyword_hits(relevant_text, API_HINTS)
+
+            # Hard relevance gate: the result must have both an intelligence need
+            # or capability and local evidence that it exposes data/API access.
+            if not api_evidence or not (matched_needs or capabilities):
+                continue
+
+            source_type = classify_source(
+                full_name=full_name,
+                description=description,
+                topics=topics,
+                evidence_text=evidence_text,
+                matched_needs=matched_needs,
+                api_evidence=api_evidence,
             )
 
-            combined_text = " ".join(
-                (
-                    full_name,
-                    description,
-                    " ".join(topics),
-                    readme,
-                )
-            )
+            if source_type in {SourceType.IRRELEVANT, SourceType.DATASET}:
+                continue
 
-            (
-                score,
-                matched_needs,
-                free_hints,
-                risk_hints,
-            ) = score_repository(
-                stars=int(
-                    repo.get(
-                        "stargazers_count",
-                        0,
-                    )
-                    or 0
-                ),
-                updated_at=str(
-                    repo.get(
-                        "updated_at",
-                        "",
-                    )
-                    or ""
-                ),
-                combined_text=combined_text,
+            result = score_repository(
+                stars=int(repo.get("stargazers_count", 0) or 0),
+                updated_at=str(repo.get("updated_at", "") or ""),
+                metadata_text=metadata_text,
+                evidence_text=evidence_text,
                 needs=needs,
+                capabilities=capabilities,
+                source_type=source_type,
             )
 
-            license_payload = repo.get(
-                "license"
-            )
+            if result.score < min_score:
+                continue
+
+            license_payload = repo.get("license")
             license_name = None
-
-            if isinstance(
-                license_payload,
-                dict,
-            ):
-                raw_name = (
-                    license_payload.get(
-                        "name"
-                    )
-                )
-                if isinstance(
-                    raw_name,
-                    str,
-                ):
-                    license_name = (
-                        raw_name
-                    )
+            if isinstance(license_payload, dict):
+                raw_name = license_payload.get("name")
+                if isinstance(raw_name, str):
+                    license_name = raw_name
 
             candidates.append(
                 ApiCandidate(
                     full_name=full_name,
-                    html_url=str(
-                        repo.get(
-                            "html_url",
-                            "",
-                        )
-                    ),
+                    html_url=str(repo.get("html_url", "")),
                     description=description,
-                    stars=int(
-                        repo.get(
-                            "stargazers_count",
-                            0,
-                        )
-                        or 0
-                    ),
-                    updated_at=str(
-                        repo.get(
-                            "updated_at",
-                            "",
-                        )
-                        or ""
-                    ),
-                    license_name=(
-                        license_name
-                    ),
+                    stars=int(repo.get("stargazers_count", 0) or 0),
+                    updated_at=str(repo.get("updated_at", "") or ""),
+                    license_name=license_name,
                     topics=topics,
-                    score=score,
-                    matched_needs=(
-                        matched_needs
+                    source_type=source_type,
+                    confidence=confidence_for(
+                        source_type=source_type,
+                        matched_needs=result.matched_needs,
+                        capabilities=capabilities,
+                        api_evidence=result.api_evidence,
                     ),
-                    free_hints=(
-                        free_hints
-                    ),
-                    risk_hints=(
-                        risk_hints
-                    ),
-                    readme_excerpt=(
-                        readme_excerpt(
-                            readme,
-                            needs,
-                        )
-                    ),
+                    score=result.score,
+                    matched_needs=result.matched_needs,
+                    capabilities=capabilities,
+                    api_evidence=result.api_evidence,
+                    free_hints=result.free_hints,
+                    risk_hints=result.risk_hints,
+                    score_reasons=result.reasons,
+                    readme_excerpt=evidence_text,
                 )
             )
 
-        return sorted(
-            candidates,
-            key=lambda candidate: (
-                candidate.score
-            ),
-            reverse=True,
-        )
+        return sorted(candidates, key=lambda candidate: candidate.score, reverse=True)
