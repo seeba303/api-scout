@@ -112,3 +112,13 @@ V3: licensing/commercial-use checks + API health
 V4: recommendation/LLM layer over verified evidence  
 V5: starter integration-code generation  
 V6: web app / SaaS / team source catalog
+
+## Offline HTTP regression checks
+
+CI runs Ruff and pytest on Python 3.11 and 3.13. The HTTP-client tests use
+`httpx.MockTransport`; they do not consume GitHub quota or require tokens.
+Coverage includes search bounds, missing READMEs, injected-client ownership,
+timeout propagation and rate-limit handling. Ordinary 403 permission errors
+remain HTTP errors; only 429 or 403 with rate-limit headers is classified as
+throttling. A secondary limit without these headers remains an HTTP error.
+No automatic retries are performed, preventing hidden request amplification.

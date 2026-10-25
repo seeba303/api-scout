@@ -54,7 +54,15 @@ class GitHubClient:
 
     @staticmethod
     def _raise_for_status(response: httpx.Response) -> None:
-        if response.status_code in {403, 429}:
+        # A 403 may be an authorization failure, not a throttling response.
+        limited = response.status_code == 429 or (
+            response.status_code == 403
+            and (
+                response.headers.get("x-ratelimit-remaining") == "0"
+                or "retry-after" in response.headers
+            )
+        )
+        if limited:
             remaining = response.headers.get("x-ratelimit-remaining")
             reset = response.headers.get("x-ratelimit-reset")
             details = "GitHub rate limit reached."
